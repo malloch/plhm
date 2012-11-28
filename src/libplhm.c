@@ -257,6 +257,12 @@ int plhm_is_initialized(plhm_t *p)
     return p->device_open;
 }
 
+void command(plhm_t *p, const char *cmd)
+{
+    tracecmd(cmd);
+    write(p->wr, cmd, strlen(cmd));
+}
+
 void plhm_reset(plhm_t *p)
 {
     command(p, "\x19\r");
@@ -272,12 +278,6 @@ int plhm_find_device(const char *device)
         return 1;
     }
     return 0;
-}
-
-void command(plhm_t *p, const char *cmd)
-{
-    tracecmd(cmd);
-    write(p->wr, cmd, strlen(cmd));
 }
 
 int plhm_read_bits(plhm_t *p)
