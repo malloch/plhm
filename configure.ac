@@ -53,6 +53,18 @@ AS_IF([test x$with_liblo != xno],[
   AC_SUBST(LIBLO,liblo)
 ])
 
+# Check for libmapper
+AC_ARG_WITH([libmapper-0],
+  AS_HELP_STRING([--without-libmapper],[compile without libmapper]))
+AS_IF([test x$with_libmapper != xno],[
+  PKG_CHECK_MODULES([libmapper], [libmapper-0 >= 0.2])])
+AS_IF([test "x$libmapper_LIBS" = x],
+  [with_libmapper=no])
+AS_IF([test x$with_libmapper != xno],[
+  AC_DEFINE([HAVE_LIBMAPPER],[],[Define to enable mapping support with libmapper])
+  AC_SUBST(LIBMAPPER,libmapper)
+])
+
 # Checks for header files.
 AC_HEADER_STDC
 AC_CHECK_HEADERS([sys/time.h unistd.h termios.h fcntl.h errno.h sys/stat.h \

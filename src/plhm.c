@@ -1,4 +1,4 @@
-/* 
+/*
  * "plhm" and "libplhm" are copyright 2009, Stephen Sinclair and
  * authors listed in file AUTHORS.
  *
@@ -22,6 +22,10 @@
 
 #ifdef HAVE_LIBLO
 #include <lo/lo.h>
+#endif
+
+#ifdef HAVE_LIBMAPPER
+#include <mapper/mapper.h>
 #endif
 
 #include <plhm.h>
@@ -51,6 +55,13 @@ int status_handler(const char *path, const char *types, lo_arg **argv, int argc,
 int addr = 1;
 #endif
 
+#ifdef HAVE_LIBMAPPER
+mapper_timetag_t timetag;
+mapper_device map_dev = 0;
+mapper_signal sig_pos[8][3];
+mapper_signal sig_eul[8][3];
+#endif
+
 int read_stations_and_send(plhm_t *pol, int poll);
 
 typedef union {
@@ -74,9 +85,11 @@ static int euler_flag = 0;
 static int position_flag = 0;
 static int timestamp_flag = 0;
 static int reset_flag = 0;
+static int mapper_flag = 0;
 
 const char *device_name = "/dev/ttyUSB0";
 const char *osc_url = 0;
+const char *mapper_alias = 0;
 
 FILE *outfile = 0;
 
@@ -99,6 +112,9 @@ int main(int argc, char *argv[])
         {"send",     required_argument, 0,              's'},
         {"listen",   required_argument, 0,              'l'},
 #endif
+#ifdef HAVE_LIBMAPPER
+        {"mapper",   no_argument,       &mapper_flag,   1},
+#endif
         {"poll",     optional_argument, 0,              'p'},
         {"help",     no_argument,       0,              0},
         {"version",  no_argument,       0,              'V'},
@@ -109,7 +125,7 @@ int main(int argc, char *argv[])
     while (1)
     {
         int option_index = 0;
-        int c = getopt_long(argc, argv, "Dd:HEPTo::s:l:hVp::",
+        int c = getopt_long(argc, argv, "Dd:HEPTo::s:l:mhVp::",
                             long_options, &option_index);
         if (c==-1)
             break;
@@ -154,6 +170,12 @@ int main(int argc, char *argv[])
 
         case 'l':
             listen_port = atoi(optarg);
+            break;
+#endif
+
+#ifdef HAVE_LIBMAPPER
+        case 'm':
+            mapper_flag = 1;
             break;
 #endif
 
@@ -204,6 +226,9 @@ int main(int argc, char *argv[])
 "                        this option is required to enable\n"
 "                        the Open Sound Control interface\n"
 "  -l --listen=<port>    port on which to listen for OSC messages\n"
+#endif
+#ifdef HAVE_LIBMAPPER
+"  -m --mapper           enable ad-hoc mapping with libmapper\n"
 #endif
 "  -p --poll=[period]    poll instead of requesting continuous data\n"
 "                        optional period is in milliseconds, or as\n"
@@ -259,14 +284,35 @@ int main(int argc, char *argv[])
     }
 #endif
 
+#ifdef HAVE_LIBMAPPER
+    // setup mapper device
+    if (!mapper_alias)
+        mapper_alias = strdup("polhemus");
+    map_dev = mdev_new(mapper_alias, 0, 0);
+
+    // initialize signal pointers
+    int i, j;
+    for (i=0; i<8; i++) {
+        for (j=0; j<3; j++) {
+            sig_pos[i][j] = 0;
+            sig_eul[i][j] = 0;
+        }
+    }
+#endif
+
     started = 1;
 
     signal(SIGINT, ctrlc_handler);
 
-    while (started || daemon_flag) {
+    while (started || daemon_flag || mapper_flag) {
+
+#ifdef HAVE_LIBMAPPER
+        mdev_poll(map_dev, 1000);
+#else
         sleep(slp);
         slp = 1;
-        
+#endif
+
         // Loop until device is available.
         if (plhm_find_device(device_name)) {
             if (daemon_flag) {
@@ -280,7 +326,7 @@ int main(int argc, char *argv[])
         device_found = 1;
 
         // Don't open device if nobody is listening
-        if (!(started && (addr || outfile)) && daemon_flag)
+        if (!(started && (addr || outfile || mapper_flag)) && daemon_flag)
             continue;
 
         if (plhm_open_device(&pol, device_name))
@@ -305,7 +351,7 @@ int main(int argc, char *argv[])
 
         CHECKBRK("text_mode",plhm_text_mode(&pol));
 
-        // determine tracker type        
+        // determine tracker type
         CHECKBRK("get_version",plhm_get_version(&pol));
         if (pol.device_type == PLHM_UNKNOWN)
             printf("[plhm] Warning: Device type unknown.\n");
@@ -365,6 +411,11 @@ int main(int argc, char *argv[])
     if (addr)
         lo_address_free(addr);
 #endif
+#ifdef HAVE_LIBMAPPER
+    if (map_dev) {
+        mdev_free(map_dev);
+    }
+#endif
     if (outfile && (outfile != stdout))
         fclose(outfile);
 
@@ -422,7 +473,7 @@ int read_stations_and_send(plhm_t *pol, int poll)
 
     if (poll)
         plhm_data_request(pol);
-    
+
     plhm_record_t rec;
     int s;
 
@@ -460,6 +511,52 @@ int read_stations_and_send(plhm_t *pol, int poll)
 
         if (!addr)
             continue;
+
+#ifdef HAVE_LIBMAPPER
+        // check if signals exist
+        if (!sig_pos[rec.station][0]) {
+            char str[30];
+            snprintf(str, 30, "/marker.%d/x", rec.station);
+            sig_pos[rec.station][0] = mdev_add_output(map_dev, str, 1,
+                                                      'f', "cm", 0, 0);
+            snprintf(str, 30, "/marker.%d/y", rec.station);
+            sig_pos[rec.station][1] = mdev_add_output(map_dev, str, 1,
+                                                      'f', "cm", 0, 0);
+            snprintf(str, 30, "/marker.%d/z", rec.station);
+            sig_pos[rec.station][2] = mdev_add_output(map_dev, str, 1,
+                                                      'f', "cm", 0, 0);
+            snprintf(str, 30, "/marker.%d/azimuth", rec.station);
+            sig_eul[rec.station][0] = mdev_add_output(map_dev, str, 1,
+                                                      'f', 0, 0, 0);
+            snprintf(str, 30, "/marker.%d/elevation", rec.station);
+            sig_eul[rec.station][1] = mdev_add_output(map_dev, str, 1,
+                                                      'f', 0, 0, 0);
+            snprintf(str, 30, "/marker.%d/roll", rec.station);
+            sig_eul[rec.station][2] = mdev_add_output(map_dev, str, 1,
+                                                      'f', 0, 0, 0);
+        }
+        // calculate timestamp
+        // TODO: should convert Polhemus framecount or timestamp into NTP stamp
+        mdev_timetag_now(map_dev, &timetag);
+        mdev_start_queue(map_dev, timetag);
+        /*if (rec.fields & PLHM_DATA_TIMESTAMP)
+        {
+            sprintf(path, "/liberty/marker/%d/timestamp", rec.station);
+            lo_send(addr, path, "i", rec.timestamp);
+        }*/
+        if (rec.fields & PLHM_DATA_POSITION)
+        {
+            msig_update(sig_pos[rec.station][0], &rec.position[0], 1, timetag);
+            msig_update(sig_pos[rec.station][1], &rec.position[1], 1, timetag);
+            msig_update(sig_pos[rec.station][2], &rec.position[2], 1, timetag);
+        }
+        if (rec.fields & PLHM_DATA_EULER)
+        {
+            msig_update(sig_eul[rec.station][0], &rec.euler[0], 1, timetag);
+            msig_update(sig_eul[rec.station][1], &rec.euler[1], 1, timetag);
+            msig_update(sig_eul[rec.station][2], &rec.euler[2], 1, timetag);
+        }
+#endif // HAVE_LIBMAPPER
 
 #ifdef HAVE_LIBLO
         char path[30];
@@ -598,3 +695,7 @@ int status_handler(const char *path, const char *types, lo_arg **argv, int argc,
     return 0;
 }
 #endif // HAVE_LIBLO
+
+#ifdef HAVE_LIBMAPPER
+// TODO: declare mapper handler for input signal /pollrate
+#endif // HAVE_LIBMAPPER
